@@ -2,28 +2,32 @@ name: Nightly Naver Land Crawler
 
 on:
   schedule:
-    # UTC 14:00 = KST 23:00 (매일 밤 11시 실행)
+    # 매일 한국시간 23:00 (UTC 14:00) 자동 실행
     - cron: '0 14 * * *'
-  workflow_dispatch: # 깃허브 웹에서 수동 실행 허용
+  # [핵심] 수동 실행 버튼(Run workflow)을 활성화하는 트리거
+  workflow_dispatch:
 
 jobs:
   crawl:
     runs-on: ubuntu-latest
+
     steps:
-      - name: 코드 체크아웃
+      - name: 1. 저장소 코드 체크아웃
         uses: actions/checkout@v3
 
-      - name: Python 환경 설정
+      - name: 2. Python 3.10 환경 설정
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: 의존성 라이브러리 설치
+      - name: 3. 필요 라이브러리 설치
         run: |
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install requests pandas
 
-      - name: 크롤러 야간 자동 순회 실행
+      - name: 4. 네이버 부동산 크롤러 수동 실행 및 구글 시트 전송
         env:
+          # GitHub Secrets에 저장된 GAS_URL을 파이썬 환경변수로 전달
           GAS_URL: ${{ secrets.GAS_URL }}
         run: |
           python crawler.py
