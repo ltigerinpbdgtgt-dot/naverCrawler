@@ -1,0 +1,9 @@
+{
+  "selected_sido": "서울특별시",
+  "selected_sido_code": "1100000000",
+  "trade_type": "A1",
+  "rlet_types": ["DDD", "TJ"],
+  "max_price": 10000,
+  "min_space": 66.1,
+  "gas_url": ""
+}
