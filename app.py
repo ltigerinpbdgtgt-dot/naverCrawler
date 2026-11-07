@@ -4,9 +4,9 @@ import os
 import requests
 import pandas as pd
 
-# 1. 페이지 설정
+# 1. 페이지 기본 설정
 st.set_page_config(
-    page_title="네이버 부동산 자동 수집 대시보드",
+    page_title="네이버 부동산 자동 수집 & 실시간 대시보드",
     page_icon="🏠",
     layout="wide"
 )
@@ -40,10 +40,11 @@ PROPERTY_TYPE_MAP = {
     "상가": "SG"
 }
 
-def get_gas_url():
-    """Streamlit Secrets 전용 GAS URL 로드"""
+# --- Secrets 및 설정 파일 로드 함수 ---
+def get_secret(key_name):
+    """st.secrets에서 보안 변수를 가져옵니다."""
     try:
-        return st.secrets["GAS_URL"]
+        return st.secrets[key_name]
     except Exception:
         return ""
 
@@ -56,7 +57,8 @@ def load_config():
         "rlet_types": ["DDD", "TJ"],
         "rlet_names": ["단독/다가구", "토지"],
         "max_price": 10000,
-        "min_space": 66.1
+        "min_space": 66.1,
+        "schedule_time": "23:00"
     }
     if os.path.exists("config.json"):
         try:
@@ -72,39 +74,60 @@ def save_config(config_data):
         json.dump(config_data, f, ensure_ascii=False, indent=2)
 
 def fetch_sheet_data(gas_url):
-    """개선된 doGet 응답 구조를 파싱하여 DataFrame 반환"""
+    """GAS doGet 응답 파싱하여 DataFrame 반환"""
     if not gas_url:
         return None, "GAS_URL이 설정되지 않았습니다."
-    
     try:
         response = requests.get(gas_url, timeout=12)
         if response.status_code == 200:
             res_json = response.json()
-            # 1) 신규 doGet 구조: {"status": "success", "data": [...]}
             if isinstance(res_json, dict):
                 if res_json.get("status") == "success":
-                    data_list = res_json.get("data", [])
-                    return pd.DataFrame(data_list), None
+                    return pd.DataFrame(res_json.get("data", [])), None
                 else:
                     return None, f"GAS 오류: {res_json.get('message')}"
-            # 2) 구형 doGet 구조: 바로 리스트가 들어오는 경우 백업 파싱
             elif isinstance(res_json, list):
                 return pd.DataFrame(res_json), None
         else:
             return None, f"HTTP 요청 실패 (코드: {response.status_code})"
     except Exception as e:
         return None, f"연동 예외 발생: {str(e)}"
-        
     return None, "알 수 없는 응답 구조입니다."
+
+def trigger_github_workflow():
+    """GitHub REST API를 호출하여 workflow_dispatch 수동 실행을 트리거합니다."""
+    github_token = get_secret("GITHUB_TOKEN")
+    github_repo = get_secret("GITHUB_REPO")  # 예: "owner/repository_name"
+    workflow_filename = "crawler.yml"         # GitHub Actions 파일명
+
+    if not github_token or not github_repo:
+        return False, "Streamlit Secrets에 `GITHUB_TOKEN` 또는 `GITHUB_REPO`가 설정되지 않았습니다."
+
+    url = f"https://api.github.com/repos/{github_repo}/actions/workflows/{workflow_filename}/dispatches"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {github_token}",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    data = {"ref": "main"}
+
+    try:
+        res = requests.post(url, headers=headers, json=data, timeout=10)
+        if res.status_code == 204:
+            return True, "🚀 GitHub Actions 크롤러 수동 실행 요청이 성공적으로 발송되었습니다!"
+        else:
+            return False, f"GitHub API 호출 실패 (상태 코드: {res.status_code}, 메시지: {res.text})"
+    except Exception as e:
+        return False, f"요청 중 예외 발생: {str(e)}"
 
 # --- UI 메인 화면 ---
 st.title("🏠 네이버 부동산 자동 수집 & 실시간 대시보드")
 
-gas_url = get_gas_url()
+gas_url = get_secret("GAS_URL")
 config = load_config()
 
-# 사이드바 조건 설정
-st.sidebar.header("⚙️ 수집 조건 필터")
+# 사이드바: 수집 조건 및 스케줄링 설정
+st.sidebar.header("⚙️ 수집 조건 & 스케줄 설정")
 
 sido_options = list(SIDO_MAP.keys())
 current_sido = config.get("selected_sido", "서울특별시")
@@ -124,7 +147,13 @@ selected_prop_names = st.sidebar.multiselect(
 max_price = st.sidebar.number_input("최대 매매가 (만원)", value=config.get("max_price", 10000), step=1000)
 min_space = st.sidebar.number_input("최소 면적 (㎡)", value=config.get("min_space", 66.1), step=5.0)
 
-if st.sidebar.button("💾 조건 저장"):
+# 스케줄 시간 선택
+schedule_times = ["06:00", "09:00", "12:00", "18:00", "21:00", "23:00"]
+current_sched = config.get("schedule_time", "23:00")
+sched_idx = schedule_times.index(current_sched) if current_sched in schedule_times else 5
+selected_schedule = st.sidebar.selectbox("⏰ 야간 자동 수집 희망 시간", schedule_times, index=sched_idx)
+
+if st.sidebar.button("💾 수집 설정 저장"):
     selected_codes = [PROPERTY_TYPE_MAP[name] for name in selected_prop_names]
     updated_config = {
         "selected_sido": selected_sido,
@@ -133,38 +162,38 @@ if st.sidebar.button("💾 조건 저장"):
         "rlet_types": selected_codes,
         "rlet_names": selected_prop_names,
         "max_price": max_price,
-        "min_space": min_space
+        "min_space": min_space,
+        "schedule_time": selected_schedule
     }
     save_config(updated_config)
-    st.sidebar.success("✅ 조건이 성공적으로 저장되었습니다!")
+    st.sidebar.success("✅ 설정이 성공적으로 저장되었습니다!")
     st.rerun()
 
 st.sidebar.markdown("---")
-if gas_url:
-    st.sidebar.success("🔒 Secrets: `GAS_URL` 연동 완료")
-else:
-    st.sidebar.error("⚠️ Streamlit Secrets에 `GAS_URL`이 없습니다.")
+st.sidebar.subheader("🔒 Secrets 연동 상태")
+st.sidebar.text(f"GAS_URL: {'✅' if gas_url else '❌'}")
+st.sidebar.text(f"GITHUB_TOKEN: {'✅' if get_secret('GITHUB_TOKEN') else '❌'}")
+st.sidebar.text(f"GITHUB_REPO: {'✅' if get_secret('GITHUB_REPO') else '❌'}")
 
-# 메인 대시보드 탭
-tab1, tab2 = st.tabs(["📊 구글 시트 실시간 매물 조회", "⚙️ 수집 설정 정보"])
+# 메인 탭 구성
+tab1, tab2, tab3 = st.tabs(["📊 구글 시트 실시간 조회", "🚀 수동 수집 트리거", "⚙️ 설정 및 안내"])
 
 with tab1:
     st.subheader("📋 구글 시트 누적 매물 데이터")
-    
     if st.button("🔄 시트 데이터 새로고침"):
         st.rerun()
-        
+
     if not gas_url:
-        st.warning("Streamlit Cloud의 App Settings > Secrets에 `GAS_URL`을 설정해 주세요.")
+        st.warning("Streamlit Secrets에 `GAS_URL`이 설정되어 있지 않습니다.")
     else:
         with st.spinner("구글 시트 데이터를 로드하는 중..."):
             df, error_msg = fetch_sheet_data(gas_url)
-            
+
         if error_msg:
             st.error(f"⚠️ 데이터 가져오기 실패: {error_msg}")
         elif df is not None:
             if df.empty:
-                st.info("💡 구글 시트에 아직 누적된 매물 데이터가 없습니다. (크롤러를 수동 실행하거나 야간 스케줄링을 기다려 주세요.)")
+                st.info("💡 시트에 저장된 매물이 없습니다. [🚀 수동 수집 트리거] 탭에서 수동 실행을 눌러보세요.")
             else:
                 st.metric("총 수집된 매물 수", f"{len(df)} 건")
                 st.dataframe(
@@ -176,5 +205,22 @@ with tab1:
                 )
 
 with tab2:
-    st.subheader("⚙️ 현재 저장된 설정 (`config.json`)")
+    st.subheader("🚀 즉시 크롤링 수동 실행")
+    st.markdown("""
+    정기 자동 수집 시간까지 기다리지 않고, **지금 즉시 GitHub Actions 가상 머신을 가동하여 수집**합니다.
+    """)
+    
+    col_trigger, col_blank = st.columns([1, 2])
+    with col_trigger:
+        if st.button("⚡ 지금 즉시 크롤러 실행하기", type="primary", use_container_width=True):
+            with st.spinner("GitHub Actions에 워크플로우 실행 요청을 보내는 중..."):
+                success, msg = trigger_github_workflow()
+                if success:
+                    st.success(msg)
+                    st.info("ℹ️ GitHub Actions VM 구동 및 데이터 시트 저장까지 약 1~2분이 소요됩니다.")
+                else:
+                    st.error(msg)
+
+with tab3:
+    st.subheader("⚙️ 저장된 설정 정보 (`config.json`)")
     st.json(load_config())
