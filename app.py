@@ -2,10 +2,11 @@ import streamlit as st
 import json
 import os
 import requests
+import pandas as pd
 
 # 1. 페이지 기본 설정
 st.set_page_config(
-    page_title="네이버 부동산 자동 수집 제어판",
+    page_title="네이버 부동산 수집 대시보드",
     page_icon="🏠",
     layout="wide"
 )
@@ -41,14 +42,13 @@ PROPERTY_TYPE_MAP = {
 
 def get_gas_url():
     """
-    GAS URL 자동 탐색 우선순위:
-    1. Streamlit Secrets (secrets.toml)
-    2. OS 환경 변수 (GAS_URL)
-    3. config.json 설정 파일
+    GAS URL을 Streamlit Secrets에서만 로드합니다.
+    (st.secrets["GAS_URL"] 방식 단일 적용)
     """
-    if "GAS_URL" in st.secrets:
+    try:
         return st.secrets["GAS_URL"]
-    return os.environ.get("GAS_URL", "")
+    except Exception:
+        return ""
 
 def load_config():
     """config.json 설정 로드"""
@@ -59,14 +59,12 @@ def load_config():
         "rlet_types": ["DDD", "TJ"],
         "rlet_names": ["단독/다가구", "토지"],
         "max_price": 10000,
-        "min_space": 66.1,
-        "gas_url": ""
+        "min_space": 66.1
     }
     if os.path.exists("config.json"):
         try:
             with open("config.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data
+                return json.load(f)
         except Exception:
             return default_config
     return default_config
@@ -76,15 +74,32 @@ def save_config(config_data):
     with open("config.json", "w", encoding="utf-8") as f:
         json.dump(config_data, f, ensure_ascii=False, indent=2)
 
-# --- UI 메인 화면 ---
-st.title("🏠 네이버 부동산 자동 수집 제어판")
-st.markdown("매번 URL을 입력할 필요 없이 자동으로 연동되는 수집 시스템입니다.")
+def fetch_sheet_data(gas_url):
+    """
+    GAS 웹앱(GET)을 통해 구글 시트에 누적된 최신 데이터를 가져옵니다.
+    """
+    if not gas_url:
+        return None
+    try:
+        # GET 요청으로 시트 데이터 수신
+        response = requests.get(gas_url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list) and len(data) > 0:
+                return pd.DataFrame(data)
+    except Exception as e:
+        st.error(f"데이터 조회 중 오류 발생: {e}")
+    return None
 
+# --- UI 메인 화면 ---
+st.title("🏠 네이버 부동산 자동 수집 & 실시간 조회 대시보드")
+st.markdown("수집 조건을 설정하고 구글 시트에 업데이트된 매물을 실시간으로 모니터링합니다.")
+
+gas_url = get_gas_url()
 config = load_config()
-current_gas_url = get_gas_url() or config.get("gas_url", "")
 
 # 사이드바 설정 영역
-st.sidebar.header("⚙️ 수집 조건 필터")
+st.sidebar.header("⚙️ 야간 수집 조건 필터")
 
 # 1. 광역단위 선택
 sido_options = list(SIDO_MAP.keys())
@@ -92,7 +107,7 @@ current_sido = config.get("selected_sido", "서울특별시")
 sido_idx = sido_options.index(current_sido) if current_sido in sido_options else 0
 selected_sido = st.sidebar.selectbox("📍 수집 광역단위 (시/도)", sido_options, index=sido_idx)
 
-# 2. 매물유형 선택
+# 2. 매물유형 멀티 선택
 all_prop_names = list(PROPERTY_TYPE_MAP.keys())
 saved_prop_names = config.get("rlet_names", ["단독/다가구", "토지"])
 default_selected_props = [name for name in saved_prop_names if name in all_prop_names]
@@ -107,16 +122,7 @@ selected_prop_names = st.sidebar.multiselect(
 max_price = st.sidebar.number_input("최대 매매가 (만원)", value=config.get("max_price", 10000), step=1000)
 min_space = st.sidebar.number_input("최소 면적 (㎡)", value=config.get("min_space", 66.1), step=5.0)
 
-# 4. GAS 웹앱 URL (자동 로드 및 수동 백업)
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔗 구글 시트 연동 설정")
-input_gas_url = st.sidebar.text_input(
-    "GAS Web App URL",
-    value=current_gas_url,
-    type="password",
-    help="Streamlit Secrets에 저장되어 있으면 자동 로드됩니다."
-)
-
+# 설정 저장 버튼
 if st.sidebar.button("💾 수집 조건 저장"):
     selected_codes = [PROPERTY_TYPE_MAP[name] for name in selected_prop_names]
     updated_config = {
@@ -126,49 +132,49 @@ if st.sidebar.button("💾 수집 조건 저장"):
         "rlet_types": selected_codes,
         "rlet_names": selected_prop_names,
         "max_price": max_price,
-        "min_space": min_space,
-        "gas_url": input_gas_url
+        "min_space": min_space
     }
     save_config(updated_config)
-    st.sidebar.success("✅ 조건이 성공적으로 저장되었습니다!")
+    st.sidebar.success("✅ 조건이 저장되었습니다!")
     st.rerun()
 
-# 메인 화면 연동 상태 점검
-col1, col2 = st.columns(2)
+# 보안 Secrets 연동 상태 확인
+st.sidebar.markdown("---")
+if gas_url:
+    st.sidebar.success("🔒 Secrets: `GAS_URL` 연동 완료")
+else:
+    st.sidebar.error("⚠️ Secrets: `GAS_URL` 미설정")
 
-with col1:
-    st.subheader("📡 연결 상태 체크")
-    if input_gas_url:
-        st.success("✅ GAS URL 연결 정보가 존재합니다.")
-    else:
-        st.error("⚠️ GAS URL이 설정되지 않았습니다! Secrets 등록 또는 URL을 입력해 주세요.")
+# --- 탭 구성 (수집 설정 / 시트 데이터 실시간 조회) ---
+tab1, tab2 = st.tabs(["📊 구글 시트 실시간 매물 조회", "⚙️ 수집 설정 정보"])
+
+with tab1:
+    st.subheader("📋 구글 시트 누적 매물 데이터")
+    
+    col_btn, col_info = st.columns([1, 4])
+    with col_btn:
+        refresh_button = st.button("🔄 시트 데이터 새로고침")
         
-    st.subheader("📋 현재 설정 정보")
-    st.json(load_config())
-
-with col2:
-    st.subheader("🧪 연동 테스트 버튼")
-    if st.button("🔔 구글 시트 연결 테스트 전송"):
-        if not input_gas_url:
-            st.error("GAS URL이 없습니다.")
+    if not gas_url:
+        st.warning("Streamlit Secrets에 `GAS_URL`이 등록되어 있지 않습니다. App Settings > Secrets를 확인해 주세요.")
+    else:
+        with st.spinner("구글 시트에서 최신 데이터를 불러오는 중..."):
+            df = fetch_sheet_data(gas_url)
+            
+        if df is not None and not df.empty:
+            st.metric("총 수집된 매물 수", f"{len(df)} 건")
+            
+            # DataFrame 컬럼 순서 정리 및 테이블 출력
+            st.dataframe(
+                df,
+                use_container_width=True,
+                column_config={
+                    "상세URL": st.column_config.LinkColumn("네이버 링크")
+                }
+            )
         else:
-            test_payload = [{
-                "수집일시": "테스트 실행",
-                "매물ID": "TEST_001",
-                "지역명": "테스트 지역",
-                "매물명": "연동 테스트 매물",
-                "매물유형": "테스트",
-                "거래유형": "매매",
-                "매매가": "0",
-                "면적": "0/0",
-                "층수": "1/1",
-                "상세URL": "https://land.naver.com"
-            }]
-            try:
-                res = requests.post(input_gas_url, json=test_payload, timeout=10)
-                st.write(f"응답 코드: {res.status_code}")
-                st.write(f"응답 내용: {res.text}")
-                if res.status_code == 200:
-                    st.success("🎉 구글 시트 데이터 전송 성공!")
-            except Exception as e:
-                st.error(f"전송 실패: {e}")
+            st.info("시트에 저장된 매물이 없거나 데이터를 가져올 수 없습니다. Apps Script의 `doGet` 함수가 배포되었는지 확인해 주세요.")
+
+with tab2:
+    st.subheader("⚙️ 현재 저장된 수집 조건 (`config.json`)")
+    st.json(load_config())
