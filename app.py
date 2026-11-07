@@ -3,6 +3,7 @@ import json
 import os
 import requests
 import pandas as pd
+import re
 
 # 1. 페이지 기본 설정
 st.set_page_config(
@@ -40,16 +41,29 @@ PROPERTY_TYPE_MAP = {
     "상가": "SG"
 }
 
-# --- Secrets 및 설정 파일 로드 함수 ---
 def get_secret(key_name):
-    """st.secrets에서 보안 변수를 가져옵니다."""
+    """st.secrets에서 보안 변수를 안전하게 로드합니다."""
     try:
         return st.secrets[key_name]
     except Exception:
         return ""
 
+def clean_github_repo(raw_repo):
+    """
+    GITHUB_REPO에 URL 전체(예: https://github.com/user/repo)가 들어와도
+    순수 'owner/repo' 형태만 자동으로 정규화하여 추출합니다.
+    """
+    if not raw_repo:
+        return ""
+    # URL 형태인 경우 owner/repo 부분만 정규식으로 추출
+    clean_str = raw_repo.strip().rstrip("/")
+    match = re.search(r"github\.com/([^/]+/[^/]+)", clean_str)
+    if match:
+        return match.group(1)
+    return clean_str
+
 def load_config():
-    """config.json 읽기"""
+    """config.json 로드"""
     default_config = {
         "selected_sido": "서울특별시",
         "selected_sido_code": "1100000000",
@@ -95,10 +109,14 @@ def fetch_sheet_data(gas_url):
     return None, "알 수 없는 응답 구조입니다."
 
 def trigger_github_workflow():
-    """GitHub REST API를 호출하여 workflow_dispatch 수동 실행을 트리거합니다."""
-    github_token = get_secret("GITHUB_TOKEN")
-    github_repo = get_secret("GITHUB_REPO")  # 예: "owner/repository_name"
-    workflow_filename = "crawler.yml"         # GitHub Actions 파일명
+    """
+    GitHub REST API를 호출하여 workflow_dispatch 수동 실행을 트리거합니다.
+    404 에러 발생 시 원인을 정밀 진단합니다.
+    """
+    github_token = get_secret("GITHUB_TOKEN").strip()
+    raw_repo = get_secret("GITHUB_REPO")
+    github_repo = clean_github_repo(raw_repo)
+    workflow_filename = "crawler.yml"  # .github/workflows/ 폴더 내 파일명
 
     if not github_token or not github_repo:
         return False, "Streamlit Secrets에 `GITHUB_TOKEN` 또는 `GITHUB_REPO`가 설정되지 않았습니다."
@@ -113,20 +131,35 @@ def trigger_github_workflow():
 
     try:
         res = requests.post(url, headers=headers, json=data, timeout=10)
+        
+        # 204 No Content: 호출 성공
         if res.status_code == 204:
-            return True, "🚀 GitHub Actions 크롤러 수동 실행 요청이 성공적으로 발송되었습니다!"
+            return True, f"🚀 [{github_repo}] 크롤러 수동 실행 요청이 성공적으로 발송되었습니다!"
+        
+        # 404 Not Found 정밀 진단
+        elif res.status_code == 404:
+            err_msg = (
+                f"❌ GitHub API 404 오류 발생! 다음 3가지를 점검해 주세요:\n"
+                f"1. GITHUB_REPO 이름 확인: 현재 감지된 이름 → `{github_repo}` (대소문자 오타 확인)\n"
+                f"2. 워크플로우 파일 확인: 저장소의 `.github/workflows/{workflow_filename}` 파일 존재 여부\n"
+                f"3. 토큰 권한(Scope) 확인: 발급받은 GITHUB_TOKEN에 `repo` 및 `workflow` 권한이 포함되었는지 확인"
+            )
+            return False, err_msg
         else:
             return False, f"GitHub API 호출 실패 (상태 코드: {res.status_code}, 메시지: {res.text})"
+            
     except Exception as e:
-        return False, f"요청 중 예외 발생: {str(e)}"
+        return False, f"요청 처리 중 예외 발생: {str(e)}"
 
 # --- UI 메인 화면 ---
 st.title("🏠 네이버 부동산 자동 수집 & 실시간 대시보드")
 
 gas_url = get_secret("GAS_URL")
+raw_repo = get_secret("GITHUB_REPO")
+clean_repo = clean_github_repo(raw_repo)
 config = load_config()
 
-# 사이드바: 수집 조건 및 스케줄링 설정
+# 사이드바: 수집 조건 및 스케줄 설정
 st.sidebar.header("⚙️ 수집 조건 & 스케줄 설정")
 
 sido_options = list(SIDO_MAP.keys())
@@ -147,7 +180,6 @@ selected_prop_names = st.sidebar.multiselect(
 max_price = st.sidebar.number_input("최대 매매가 (만원)", value=config.get("max_price", 10000), step=1000)
 min_space = st.sidebar.number_input("최소 면적 (㎡)", value=config.get("min_space", 66.1), step=5.0)
 
-# 스케줄 시간 선택
 schedule_times = ["06:00", "09:00", "12:00", "18:00", "21:00", "23:00"]
 current_sched = config.get("schedule_time", "23:00")
 sched_idx = schedule_times.index(current_sched) if current_sched in schedule_times else 5
@@ -173,7 +205,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🔒 Secrets 연동 상태")
 st.sidebar.text(f"GAS_URL: {'✅' if gas_url else '❌'}")
 st.sidebar.text(f"GITHUB_TOKEN: {'✅' if get_secret('GITHUB_TOKEN') else '❌'}")
-st.sidebar.text(f"GITHUB_REPO: {'✅' if get_secret('GITHUB_REPO') else '❌'}")
+st.sidebar.text(f"GITHUB_REPO: {'✅' if clean_repo else '❌'} ({clean_repo if clean_repo else '미설정'})")
 
 # 메인 탭 구성
 tab1, tab2, tab3 = st.tabs(["📊 구글 시트 실시간 조회", "🚀 수동 수집 트리거", "⚙️ 설정 및 안내"])
