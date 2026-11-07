@@ -50,12 +50,11 @@ def get_secret(key_name):
 
 def clean_github_repo(raw_repo):
     """
-    GITHUB_REPO에 URL 전체(예: https://github.com/user/repo)가 들어와도
+    GITHUB_REPO에 전체 URL(예: https://github.com/owner/repo)이 들어가더라도
     순수 'owner/repo' 형태만 자동으로 정규화하여 추출합니다.
     """
     if not raw_repo:
         return ""
-    # URL 형태인 경우 owner/repo 부분만 정규식으로 추출
     clean_str = raw_repo.strip().rstrip("/")
     match = re.search(r"github\.com/([^/]+/[^/]+)", clean_str)
     if match:
@@ -88,7 +87,7 @@ def save_config(config_data):
         json.dump(config_data, f, ensure_ascii=False, indent=2)
 
 def fetch_sheet_data(gas_url):
-    """GAS doGet 응답 파싱하여 DataFrame 반환"""
+    """GAS doGet 응답을 파싱하여 DataFrame을 반환합니다."""
     if not gas_url:
         return None, "GAS_URL이 설정되지 않았습니다."
     try:
@@ -111,12 +110,14 @@ def fetch_sheet_data(gas_url):
 def trigger_github_workflow():
     """
     GitHub REST API를 호출하여 workflow_dispatch 수동 실행을 트리거합니다.
-    404 에러 발생 시 원인을 정밀 진단합니다.
+    실제 워크플로우 파일명인 'nightly_crawler.yml'을 호출합니다.
     """
     github_token = get_secret("GITHUB_TOKEN").strip()
     raw_repo = get_secret("GITHUB_REPO")
     github_repo = clean_github_repo(raw_repo)
-    workflow_filename = "crawler.yml"  # .github/workflows/ 폴더 내 파일명
+    
+    # 🎯 실제 GitHub Actions 워크플로우 파일명 반영
+    workflow_filename = "nightly_crawler.yml"
 
     if not github_token or not github_repo:
         return False, "Streamlit Secrets에 `GITHUB_TOKEN` 또는 `GITHUB_REPO`가 설정되지 않았습니다."
@@ -134,7 +135,7 @@ def trigger_github_workflow():
         
         # 204 No Content: 호출 성공
         if res.status_code == 204:
-            return True, f"🚀 [{github_repo}] 크롤러 수동 실행 요청이 성공적으로 발송되었습니다!"
+            return True, f"🚀 [{github_repo}] 크롤러({workflow_filename}) 수동 실행 요청이 성공적으로 발송되었습니다!"
         
         # 404 Not Found 정밀 진단
         elif res.status_code == 404:
@@ -142,7 +143,7 @@ def trigger_github_workflow():
                 f"❌ GitHub API 404 오류 발생! 다음 3가지를 점검해 주세요:\n"
                 f"1. GITHUB_REPO 이름 확인: 현재 감지된 이름 → `{github_repo}` (대소문자 오타 확인)\n"
                 f"2. 워크플로우 파일 확인: 저장소의 `.github/workflows/{workflow_filename}` 파일 존재 여부\n"
-                f"3. 토큰 권한(Scope) 확인: 발급받은 GITHUB_TOKEN에 `repo` 및 `workflow` 권한이 포함되었는지 확인"
+                f"3. 토큰 권한(Scope) 확인: 발급받은 GITHUB_TOKEN에 `repo` 및 `workflow` 권한 포함 여부"
             )
             return False, err_msg
         else:
